@@ -1,0 +1,554 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+    <id>https://EdithKing.github.io</id>
+    <title>Gridea</title>
+    <updated>2024-01-01T04:04:37.666Z</updated>
+    <generator>https://github.com/jpmonette/feed</generator>
+    <link rel="alternate" href="https://EdithKing.github.io"/>
+    <link rel="self" href="https://EdithKing.github.io/atom.xml"/>
+    <subtitle>good good study,day day up</subtitle>
+    <logo>https://EdithKing.github.io/images/avatar.png</logo>
+    <icon>https://EdithKing.github.io/favicon.ico</icon>
+    <rights>All rights reserved 2024, Gridea</rights>
+    <entry>
+        <title type="html"><![CDATA[ReentrantLock锁实现-jdk17]]></title>
+        <id>https://EdithKing.github.io/post/reentrantlock-suo-shi-xian/</id>
+        <link href="https://EdithKing.github.io/post/reentrantlock-suo-shi-xian/">
+        </link>
+        <updated>2023-12-31T03:01:40.000Z</updated>
+        <content type="html"><![CDATA[<!-- more -->
+<blockquote>
+<p>ReentrantLock是类似于synchronized的一种可冲入的互斥锁，可保证线程安全。它是基于 <a href="https://edithking.github.io/post/abstractqueuedsynchronizer-dui-lie-tong-bu-qi-aqs-tong-bu-qi-yuan-ma-jie-xi/">AQS同步器实现</a>，如果不了解AQS同步器，可以先看看AQS的源码实现。</p>
+</blockquote>
+<h2 id="reentrantlock结构组成">ReentrantLock结构组成</h2>
+<figure data-type="image" tabindex="1"><img src="https://EdithKing.github.io/post-images/1703993625569.png" alt="" loading="lazy"></figure>
+<p>从结构上看，ReentrantLock整体结构还是非常简单，Lock是对锁的操作内容。</p>
+<p>Lock类</p>
+<pre><code class="language-java">    public interface Lock {
+            // 获取锁
+            void lock();
+            // 获取锁响应中断
+            void lockInterruptibly() throws InterruptedException;
+            // 尝试获取锁，获取成功返回true,失败false
+            boolean tryLock();
+            // 尝试获取锁并响应中断
+            boolean tryLock(long time, TimeUnit unit) throws InterruptedException;
+            // 释放锁
+           void unlock();
+            // 创建条件变量
+           Condition newCondition();
+    }
+</code></pre>
+<p>Lock定义的方法不多，ReentrantLock实现这些方法采用了Sync这个内部类，这个类有两个实现类，由NonfairSync（非公平方式获取锁）和FairSync（公平方式获取锁）。公平锁和非公平锁的区别就在于是不是最先等待的线程最先获取到锁。我们知道AQS同步器是提供了很多模板方法供子类去实现的，有tryAcquire，tryRelease，tryAcquireShared，tryReleaseShared，isHeldExclusively等方法。我们先看如何使用ReentrantLock锁。</p>
+<pre><code class="language-java"> Lock lock = new ReentrantLock();
+        lock.lock();
+        try{
+            // 获取锁后做自己的业务操作
+        }finally {
+            lock.unlock(); 
+        }
+</code></pre>
+<p>操作很简单，直接使用lock方法，我们跟着源码走一波。</p>
+<pre><code class="language-java">class ReentrantLock{
+public void lock() {
+        sync.lock();
+    }
+static class Sync{
+     final void lock() {
+            if (!initialTryLock()) // 模板方法，供子类去实现，尝试获取锁的实现，成功则返回，失败则进去AQS同步器排队
+                acquire(1);//如果获取失败，则进入AQS同步器的操作，不多述说，可详细看AQS的内容。
+        }
+    }
+    }
+</code></pre>
+<p>看模板方法initialTryLock子类的实现</p>
+<pre><code class="language-java">class FairSync{  // 公平锁
+    final boolean initialTryLock() {
+            // 获取当前线程
+            Thread current = Thread.currentThread();
+            // 
+            int c = getState();
+            if (c == 0) {
+                // 判断是否有已经排队的线程，没有则将AQS同步器状态设置CAS从0替换成1，成功则证明获取到锁，设置独占线程信息
+                if (!hasQueuedThreads() &amp;&amp; compareAndSetState(0, 1)) {
+                    setExclusiveOwnerThread(current);
+                    return true;
+                }
+            } else if (getExclusiveOwnerThread() == current) {// 当前占有的线程是否是自己，是则获取锁的次数+1，可重入锁
+                if (++c &lt; 0) // overflow
+                    throw new Error(&quot;Maximum lock count exceeded&quot;);
+                setState(c);
+                return true;
+            }
+            return false;
+        }
+   // AQS模板方法实现
+    protected final boolean tryAcquire(int acquires) {
+        //先判断AQS状态是否是0，0则没人占用，大于0则证明有线程占用，公平锁还要判断是否有人已经在排队了，有人排队则只能排队获取锁
+            if (getState() == 0 &amp;&amp; !hasQueuedPredecessors() &amp;&amp;
+                compareAndSetState(0, acquires)) {
+                setExclusiveOwnerThread(Thread.currentThread());
+                return true;
+            }
+            return false;
+        }
+
+}
+class NonfairSync{ //非公平锁
+    final boolean initialTryLock() { 
+            Thread current = Thread.currentThread();
+            if (compareAndSetState(0, 1)) { // 直接尝试cas将AQS同步器状态从0设置成1，成功获取锁，失败则没获取到锁
+                setExclusiveOwnerThread(current);
+                return true;
+            } else if (getExclusiveOwnerThread() == current) {
+                int c = getState() + 1;
+                if (c &lt; 0) // overflow
+                    throw new Error(&quot;Maximum lock count exceeded&quot;);
+                setState(c);
+                return true;
+            } else
+                return false;
+        }
+    // AQS模板方法实现 非公平锁不用判断是否有人排队，直接判断同步器状态和尝试替换同步器状态
+        protected final boolean tryAcquire(int acquires) {
+            if (getState() == 0 &amp;&amp; compareAndSetState(0, acquires)) {
+                setExclusiveOwnerThread(Thread.currentThread());
+                return true;
+            }
+            return false;
+        }
+}
+</code></pre>
+<p>锁的获取看起来很简单，只需要简单判断一下是否获取同步器状态，然后修改同步器状态就可以获取锁，主要是因为所有获取锁排队等操作都给AQS实现了，所以实现一个锁看起来就不是那么复杂了。</p>
+<p>释放锁只需要调用unlock方法即可,我们来看看释放锁的源码</p>
+<pre><code class="language-java">class ReentrantLock{
+ public void unlock() {
+        sync.release(1); // 直接调用同步器的释放锁，同步器有释放锁的模板方法tryRelease，Sync实现了该方法
+    }
+
+class Sync{
+    protected final boolean tryRelease(int releases) {
+            int c = getState() - releases;// 当前同步器状态-减去释放的资源数，因为同步器状态为获取锁的次数，可重入
+            if (getExclusiveOwnerThread() != Thread.currentThread())
+                throw new IllegalMonitorStateException();
+            boolean free = (c == 0);
+            if (free)// 当释放完全部获取的锁时，状态为0，将独占线程信息置为null
+                setExclusiveOwnerThread(null);
+            setState(c);
+            return free;
+        }
+}
+}
+</code></pre>
+<p>释放锁也相对简单，只需要判断当前线程是否是占用锁的那个线程，然后将同步器状态-1，到0的时候，证明锁全部被释放，将独占线程设置为null，很简单的逻辑。所以看完ReentrantLock锁的实现，我们不难发现，只要我们在AQS的基础上，实现一个锁是很容易的。</p>
+]]></content>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[AbstractQueuedSynchronizer队列同步器（AQS同步器）源码解析-jdk17]]></title>
+        <id>https://EdithKing.github.io/post/abstractqueuedsynchronizer-dui-lie-tong-bu-qi-aqs-tong-bu-qi-yuan-ma-jie-xi/</id>
+        <link href="https://EdithKing.github.io/post/abstractqueuedsynchronizer-dui-lie-tong-bu-qi-aqs-tong-bu-qi-yuan-ma-jie-xi/">
+        </link>
+        <updated>2023-12-30T01:01:00.000Z</updated>
+        <content type="html"><![CDATA[<!-- more -->
+<blockquote>
+<p>AQS同步器是用来构建锁或者其他同步器的基础框架，比如ReentrantLock、ReentrantReadWriteLock和CountDownLatch，线程池等都通过继承它来完成。它在juc并发包里面的重要性可想而知。</p>
+</blockquote>
+<h2 id="队列fifo">队列（FIFO）</h2>
+<p>AQS实现了队列，采用双端链表的方式设计，节点为双端节点保存前驱以及后继节点，再使用Unsafe类（因为只能启动类加载器加载此类，如需使用通过反射获取该类对象）去原子操作节点的信息。</p>
+<ul>
+<li>Node节点类信息</li>
+</ul>
+<pre><code class="language-java">    volatile Node prev;      //前驱节点
+    volatile Node next;      //后继节点
+    Thread waiter;             // 线程信息
+    volatile int status;       // 状态  1等待状态  -1取消状态  2等待条件状态
+</code></pre>
+<ul>
+<li>AQS类信息</li>
+</ul>
+<pre><code class="language-java">    volatile Node head; // 头结点
+    volatile Node tail; // 尾节点
+    volatile int state; // 同步器状态
+</code></pre>
+<p>所以AQS采用了双端链表的方式作为一个同步器队列的实现方式。</p>
+<h2 id="aqs的结构图">AQS的结构图</h2>
+<figure data-type="image" tabindex="1"><img src="https://EdithKing.github.io/post-images/1703910712547.png" alt="" loading="lazy"></figure>
+<p>根据资源可分为独占模式以及共享模式。AbstractOwnableSynchronizer，这个类只有一个Thread的属性，从名称exclusiveOwnerThread和作用上，它就是为了记录独占模式下线程的信息。</p>
+<h2 id="aqs源码解析">AQS源码解析</h2>
+<ul>
+<li>获取资源<br>
+获取资源的入口是 acquire(int arg)方法，arg是获取资源的数量,先看看逻辑，先用tryAcquire以独占的方式获取资源，模板方法由子类去实现，是否获取到资源，如果返回true成功，就不需要进入队列等待了。</li>
+</ul>
+<pre><code class="language-java">    public final void acquire(int arg) {
+        if (!tryAcquire(arg))
+            acquire(null, arg, false, false, false, 0L);
+    }
+    protected boolean tryAcquire(int arg) {
+        throw new UnsupportedOperationException();
+    }
+// 获取方法
+final int acquire(Node node, int arg, boolean shared,
+                      boolean interruptible, boolean timed, long time) {
+        // 当前获取资源的线程
+        Thread current = Thread.currentThread();
+        byte spins = 0, postSpins = 0;   // retries upon unpark of first thread
+        boolean interrupted = false, first = false;
+        Node pred = null;                // 排队时的前驱节点
+        // cas替换尾节点，如果队列空或首节点则直接获取资源，否则替换尾节点，加入队列后休眠线程
+        for (;;) {
+            // 当一个节点有前驱节点，但前驱节点不是首节点时，进入判断前驱节点是否被取消，取消则清除该前驱节点
+            if (!first &amp;&amp; (pred = (node == null) ? null : node.prev) != null &amp;&amp;
+                !(first = (head == pred))) {
+                // 前驱节点的状态小于0，线程状态只有1等待，2等待条件唤醒，-1取消，如果小于则任务已经取消，就清除掉该前驱节点
+                if (pred.status &lt; 0) {
+                    cleanQueue();    
+                    continue;
+                } else if (pred.prev == null) {
+                    Thread.onSpinWait(); 
+                    continue;
+                }
+            }
+            // 是首节点或者前驱节点为空时，根据不同的资源获取模式，去掉用对应的模板方法获取资源。
+            if (first || pred == null) {
+                boolean acquired;
+                try {
+                    if (shared)
+                        acquired = (tryAcquireShared(arg) &gt;= 0); // 共享式获取资源
+                    else
+                        acquired = tryAcquire(arg);//独占式获取资源
+                } catch (Throwable ex) {
+                    cancelAcquire(node, interrupted, false);// 异常，取消资源获取，
+                    throw ex;
+                }
+                // 如果资源获取成功
+                if (acquired) {
+                    // 如果是首节点，则设置一些信息后返回已成功获取资源
+                    if (first) {
+                        node.prev = null;
+                        head = node;
+                        pred.next = null;
+                        node.waiter = null;
+                        if (shared)
+                            signalNextIfShared(node); // 如果下一个是贡献资源获取的节点线程，则唤醒
+                        if (interrupted)
+                            current.interrupt();
+                    }
+                    return 1; 
+                }
+            }
+            // 当前节点刚进入排队则创建对应的节点
+            if (node == null) { 
+                if (shared)
+                    node = new SharedNode();
+                else
+                    node = new ExclusiveNode();
+            } else if (pred == null) { // 前驱节点为空
+                node.waiter = current;//设置节点信息为当前线程
+                Node t = tail;//同步器尾节点
+                node.setPrevRelaxed(t);         // 设置当前节点的前驱节点为同步器的尾节点，cas替换
+                if (t == null) //没有尾节点，即队列为空，这初始化首节点
+                    tryInitializeHead();
+                else if (!casTail(t, node))//cas替换尾节点为当前节点，替换失败，则将当前的前驱节点设置为null
+                    node.setPrevRelaxed(null); 
+                else
+                    t.next = node; 
+            } else if (first &amp;&amp; spins != 0) {
+                --spins;
+                Thread.onSpinWait();
+            } else if (node.status == 0) {
+                // 设置节点状态为1
+                node.status = WAITING;
+            } else {
+                long nanos;
+                spins = postSpins = (byte)((postSpins &lt;&lt; 1) | 1);
+                if (!timed)
+                    LockSupport.park(this);//休眠线程
+                else if ((nanos = time - System.nanoTime()) &gt; 0L)
+                    LockSupport.parkNanos(this, nanos);
+                else
+                    break;
+                node.clearStatus();
+                if ((interrupted |= Thread.interrupted()) &amp;&amp; interruptible)
+                    break;
+            }
+        }
+        return cancelAcquire(node, interrupted, interruptible);
+    }
+</code></pre>
+<p>方法中含有3个大的if条件如下</p>
+<blockquote>
+<p>第一个if条件：if (!first &amp;&amp; (pred = (node == null) ? null : node.prev) != null &amp;&amp;!(first = (head == pred)))<br>
+第二个if条件  ： if (first || pred == null)<br>
+第三个if条件：     if (node == null)  else if (pred == null) ...<br>
+根据for循环一步一步分析：</p>
+</blockquote>
+<ul>
+<li>
+<p>当线程刚抢占资源时，肯定node是为null的，那么他前驱节点也是null，所以没有前驱节点第一个if是进不去的，直接第二个if，first是false（你会说，如果head也是空节点，first不就变成true了吗？这就是&amp;&amp;的作用，如果前面条件不符合，后面的判断就不会进行了，所以即使head为null，这里它还是false），但pred是空，所以符合，直接再次去尝试获取资源，如果成功，则设置首节点信息，如果不成功，证明有人已经占有了资源。当前node为空则创建节点，结束第一轮循环</p>
+</li>
+<li>
+<p>第二次循环，node有值，但是前驱是空，则还是第一个if不执行，第二个if符合，因为pred一样为null,继续抢占资源，成功结束，不成功，去第三个if，因为当前节点的前驱节点为空，所以加入替换，cas替换尾节点，结束第二轮</p>
+</li>
+<li>
+<p>第三轮循环，有前驱节点，则判断前驱节点是不是首节点，这一步，first的值就会因他的前驱节点是不是首节点而变化，如果不是，则对前驱节点进行判断是不是已经取消的节点，取消则把他清除</p>
+<ul>
+<li>是首节点，则first的为true</li>
+<li>不是首节点，则清除已经取消的前驱节点，然后重新下一轮循环<br>
+如果first是true，继续直接获取资源，获取失败。如果不是前驱不是首节点，或者获取资源失败，则第三个if将节点的状态变更为1,等待状态，然后继续进行下一轮循环</li>
+</ul>
+</li>
+<li>
+<p>第四轮循环如果获取失败</p>
+<ul>
+<li>如果没有超时等待标记，则直接休眠线程</li>
+<li>如果有，则休眠线程加上超时时间</li>
+<li>如果是中断线程标记，则取消节点<br>
+只能说大神的代码太优雅，太牛了，短短几个条件就考虑到了那么多的情况，膜拜膜拜👍👍</li>
+</ul>
+</li>
+<li>
+<p>清除节点</p>
+</li>
+</ul>
+<pre><code class="language-java">private void cleanQueue() {
+        for (;;) {         //从尾节点向首节点清除已经取消的节点                 
+            for (Node q = tail, s = null, p, n;;) { 
+                if (q == null || (p = q.prev) == null)
+                    return;                     
+                if (s == null ? tail != q : (s.prev != q || s.status &lt; 0)) 
+                    break;                     
+                if (q.status &lt; 0) {  
+                    if ((s == null ? casTail(q, p) : s.casPrev(q, p)) &amp;&amp;
+                        q.prev == p) {
+                        p.casNext(q, s);     
+                        if (p.prev == null) 
+                            signalNext(p); 
+                    }
+                    break;
+                }
+                if ((n = p.next) != q) {         // help finish
+                    if (n != null &amp;&amp; q.prev == p) {
+                        p.casNext(n, q);
+                        if (p.prev == null)
+                            signalNext(p);
+                    }
+                    break;
+                }
+                s = q;
+                q = q.prev;
+            }
+        }
+    }
+</code></pre>
+<ul>
+<li>取消节点</li>
+</ul>
+<pre><code class="language-java">private int cancelAcquire(Node node, boolean interrupted,
+                              boolean interruptible) {
+        // 将节点状态设置为取消，如果前驱不为空则清除节点，如果node为空，则看是否需要中断线程
+        if (node != null) {
+            node.waiter = null;
+            node.status = CANCELLED;
+            if (node.prev != null)
+                cleanQueue();
+        }
+        if (interrupted) {
+            if (interruptible)
+                return CANCELLED;
+            else
+                Thread.currentThread().interrupt();
+        }
+        return 0;
+    }
+</code></pre>
+<ul>
+<li>唤醒下一个线程</li>
+</ul>
+<pre><code class="language-java">    private static void signalNext(Node h) {
+        Node s;
+        if (h != null &amp;&amp; (s = h.next) != null &amp;&amp; s.status != 0) {
+            s.getAndUnsetStatus(WAITING);
+            LockSupport.unpark(s.waiter);
+        }
+    }
+</code></pre>
+<ul>
+<li>释放资源</li>
+</ul>
+<pre><code class="language-java">public final boolean release(int arg) {
+        if (tryRelease(arg)) {//一样是模板方法，给子类实现
+            signalNext(head);// 唤醒首节点的下一个节点
+            return true;
+        }
+        return false;
+    }
+</code></pre>
+<p>源码中使用了大量的Unsafe类来原子操作对象，并且使用了大量的模板方法来方便使用者实现自己的锁。</p>
+]]></content>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[mysql的基础架构]]></title>
+        <id>https://EdithKing.github.io/post/mysql-ji-chu-jia-gou/</id>
+        <link href="https://EdithKing.github.io/post/mysql-ji-chu-jia-gou/">
+        </link>
+        <updated>2023-08-11T11:23:53.000Z</updated>
+        <content type="html"><![CDATA[<h1 id="mysql的逻辑架构图">mysql的逻辑架构图</h1>
+<figure data-type="image" tabindex="1"><img src="https://EdithKing.github.io/post-images/1691754318455.jpg" alt="" loading="lazy"></figure>
+<p>mysql可以分为server层和存储引擎层,server层包含连接器,分析器,优化器,执行器,查询缓存;存储引擎包含MyISAM,Innodb,Memory等。</p>
+<h2 id="server层">server层</h2>
+<h3 id="连接器">连接器</h3>
+<blockquote>
+<p>提供端口,供客户端连接,验证用户名密码,获取权限</p>
+</blockquote>
+<ul>
+<li>连接操作：
+<ul>
+<li>客户端连接指令</li>
+</ul>
+<pre><code>mysql -hip -Pport -u用户名 -p密码
+</code></pre>
+<ul>
+<li>第三方连接</li>
+</ul>
+</li>
+<li>验证通过后会获取权限(用户权限信息表:information_schema.user_privileges),修改权限对已经登录的用户不影响
+<ul>
+<li>
+<p>创建用户授权语句:</p>
+<pre><code>## 创建用户
+create user 'user'@'ip' idenfitied by 'password';
+## 授权用户权限
+grant all on 'schema'.'table' to 'user'@'IP';
+## 回收用户权限
+revoke all on 'schema'.'table' from 'user'@'ip';
+</code></pre>
+</li>
+<li>
+<p>创建用户失败(提示Error 1819 - Your password does not satisfy the current policy requirements)不符合默认密码策略导致</p>
+<blockquote>
+<p>默认策略配置如下：<br>
+validate_password.changed_characters_percentage:改密码需要修改几个最少字符比例<br>
+validate_password.dictionary_file:指定密码校验的文件路径<br>
+validate_password.length:密码长度 默认8<br>
+validate_password.mixed_case_count:大小写字符最少个数 默认1<br>
+validate_password.number_count:数字最少个数 默认1<br>
+validate_password.policy：校验策略 LOW:只校验长度 MEDIUM: 检验长度,大小写个数,数字个数,特殊字符个数 STRONG:<br>
+validate_password.special_char_count: 特殊字符最少个数 默认1</p>
+</blockquote>
+</li>
+<li>
+<p>修改默认校验策略等级</p>
+<pre><code>set global validate_password_policy = LOW;
+</code></pre>
+</li>
+<li>
+<p>相关参数:</p>
+<ul>
+<li>wait_timeout: 连接等待无操作时间会将连接器关闭连接,默认值28800(8小时)</li>
+<li>max_connections: 最大连接数,默认值151,当连接数超过时,会提示 too mary connections,执行show connections可以查看当前连接信息;</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<h3 id="分析器">分析器</h3>
+<blockquote>
+<p>对sql进行解析,生成语法结构树,对查询语句中的表,字段,函数等进行验证是否有效</p>
+</blockquote>
+<ul>
+<li>查库: information_schema.schemata</li>
+<li>查表：information_schema.tables</li>
+<li>查列：information_schema.colunms</li>
+<li>查函数：information_schema.routines</li>
+<li>查触发器：information_schema.triggers</li>
+<li>查试图：information_schema.views</li>
+</ul>
+<h3 id="优化器">优化器</h3>
+<blockquote>
+<p>对sql的优化,sql重写,sql的执行顺序,索引的选择</p>
+</blockquote>
+<ul>
+<li>
+<p>sql重写</p>
+<pre><code>##建表
+create table a(
+id int primary key,
+name varchar(20),
+age int,
+index(name,age)
+)ENGINE=Innodb,CHARACTER set utf8mb4;
+## 查询
+select * from a where age = 20 and name = 'edith'；
+## 会重新调换位置
+select * from a where name = 'edith' and age = 20;
+</code></pre>
+</li>
+<li>
+<p>索引选择：优化器有时候会选择错误的索引,跟innodb统计信息有关</p>
+<blockquote>
+<p>当索引上的不同的值越多,这个索引的区分度就越好,会优先选择,这个索引上不同的值就为基数(Cardinality)<br>
+基数如何计算: 随机抽取数据页数量,然后每页数据不同值的个数,再取平均值,乘于数据页数量,就得到基数</p>
+</blockquote>
+</li>
+<li>
+<p>统计相关配置</p>
+<blockquote>
+<p>innodb_stats_persistent：ON/OFF 默认ON 采样生成的统计信息是否持久化,不持久化则存在内存中。 默认持久化<br>
+innodb_stats_persistent_sample_pages: 默认20,当持久化时,将抽取的数据页数量<br>
+innodb_stats_transient_sample_pages: 默认8,当不持久化时,将抽取的数据页数量<br>
+innodb_stats_auto_recalc: ON/OFF 默认ON 当变更行数超过1/M时,会重新进行采样统计,持久化时M是10,非持久化时M是16</p>
+</blockquote>
+</li>
+<li>
+<p>查看索引的统计信息</p>
+<pre><code>show index from a;
+</code></pre>
+</li>
+<li>
+<p>重新采样统计</p>
+<pre><code>analyze table a;
+</code></pre>
+<ul>
+<li>采样统计信息持久化表：
+<ul>
+<li>mysql.innodb_table_stats：该表最后一次收集统计信息时间
+<ul>
+<li>database_name:数据库名</li>
+<li>table_name:表名</li>
+<li>last_update:最后一次更新时间</li>
+<li>n_rows:行数</li>
+<li>clustered_index_size: 主键索引大小为多少page</li>
+<li>sum_of_other_index_size:其他索引大小为多少page</li>
+</ul>
+</li>
+<li>mysql.innodb_index_stats 特定索引的统计信息
+<ul>
+<li>database_name:数据库名</li>
+<li>table_name:表名</li>
+<li>index_name:索引名</li>
+<li>last_update:最后一次更新时间</li>
+<li>stat_name: 类型信息 size/n_leaf_pages/n_diff_pfxNN</li>
+<li>stat_value: 如果stat_name=size,那么就是索引的总大小,如果stat_name=n_leaf_pages,那么显示叶子节点的页面数,如果stat_name=n_diff_pfxNN,那么显示索引前N列的不同值的数量<br>
+PS: 这两个表可手动更新,更新后需要 FLSUH TABLE table_name;就可以重新加载生效。</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<h3 id="执行器">执行器</h3>
+<blockquote>
+<p>操作存储引擎,返回结果,将sql语句与返回结果加入查询缓存中,更新时将查询缓存删除。</p>
+</blockquote>
+<h3 id="查询缓存">查询缓存</h3>
+<blockquote>
+<p>为了再次查询时快速返回结果,将sql语句与返回结果加入查询缓存,同样sql再次查询时直接从缓存中获取结果,但更新该表数据,会清除该表所有的查询缓存。8.0版本废弃</p>
+</blockquote>
+<h2 id="存储引擎">存储引擎</h2>
+<blockquote>
+<p>负责存储和管理数据。常用存储引擎有MyISAM,Innodb,Memory等。</p>
+</blockquote>
+]]></content>
+    </entry>
+</feed>
